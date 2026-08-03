@@ -1,0 +1,26 @@
+[project]
+name = "glamira-crawl-product"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "Thanh Nguyen",email = "marncguy4n@gmail.com"}
+]
+requires-python = ">=3.14"
+dependencies = [
+    "aiohttp>=3.12,<4",
+    "playwright>=1.54,<2",
+    "pymongo>=4.11,<5",
+    "python-dotenv>=1.1,<2",
+    "pyyaml>=6.0,<7",
+]
+
+[project.scripts]
+glamira-crawl = "glamira_crawl.cli:main"
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+packages = [{include = "glamira_crawl"}]
