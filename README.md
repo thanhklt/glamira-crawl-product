@@ -19,12 +19,7 @@ python -m pip install -e .
 Nếu PowerShell không cho activate script, có thể gọi trực tiếp
 `.\.venv\Scripts\python.exe main.py <command>`.
 
-Playwright dùng trực tiếp Google Chrome và Microsoft Edge đã cài trên Windows,
-không cần tải thêm Chromium. Kiểm tra browser và User-Agent bằng:
-
-```powershell
-python main.py browser-check
-```
+HTTP crawler chỉ dùng `curl-cffi`; không cần cài Chrome, Edge hoặc Playwright.
 
 ## Xác thực MongoDB
 
@@ -99,7 +94,7 @@ logging:
   level: INFO
 ```
 
-- `INFO`: từng product ID, tracking/fallback URL, kết quả và tiến độ batch.
+- `INFO`: từng product ID, tracking/fallback URL, kết quả và tiến độ theo worker.
 - `DEBUG`: thêm từng HTTP request, response và retry.
 - `WARNING`: chỉ URL lỗi, retry và cảnh báo.
 - `ERROR`: chỉ các sản phẩm thất bại hoàn toàn.
@@ -114,18 +109,21 @@ hiệu năng.
 - Nên kiểm tra `explain()` trước khi chạy production. Index phù hợp cho truy vấn
   discovery thường là `{ collection: 1, _id: 1 }`; việc tạo index phải được DBA
   xác nhận vì có thể tốn dung lượng và I/O lớn.
-- `crawler.concurrency` hiện là 3 và `per_host_limit` là 1.
-- Bộ điều tiết chung giãn thời điểm bắt đầu mọi request từ 2 đến 3 giây
-  (`request_delay_seconds` + jitter).
+- Crawler dùng `curl-cffi` với số worker được đặt bằng `crawler.concurrency`. Mỗi
+  worker có `AsyncSession`, connection pool và cookie jar riêng;
+  `curl_impersonate: chrome` bật TLS/HTTP2 fingerprint của Chrome.
+- Worker hoạt động liên tục: hoàn tất và lưu một sản phẩm xong sẽ `claim(1)` ngay,
+  không phải chờ các worker khác kết thúc cùng batch.
+- Bộ điều tiết chung giãn thời điểm bắt đầu request theo
+  `request_delay_seconds` cộng jitter; đặt cả hai bằng `0` sẽ không chờ giữa các
+  request.
 - User-Agent được lấy round-robin từ `crawler.user_agents`; cấu hình hiện dùng
   Chrome/Edge cài thật trên máy. Mỗi User-Agent có HTTP session và cookie jar
   riêng, và cùng một sản phẩm giữ nguyên profile cho cả HTML lẫn JSON.
 - HTTP 401/403/404 không retry cùng URL. Chỉ 429, một số 5xx, timeout và lỗi mạng
   tạm thời được retry.
-- `playwright.primary: true` khiến mọi candidate URL được mở bằng Chrome/Edge
-  ngay từ lần đầu; `aiohttp` không chạy trước. Browser chạy JavaScript, giữ cookie
-  riêng theo profile và gọi JSON trong cùng context. Trang Access Denied/CAPTCHA
-  được ghi lỗi, không bị tự động vượt qua.
+- Không có browser fallback. URL bị chặn hoặc thiếu `react_data_url` được ghi lỗi,
+  sau đó crawler chuyển sang candidate URL tiếp theo.
 - Mỗi `product_id` giữ tối đa ba candidate URL. Chỉ một JSON thành công được
   lưu nhờ primary key trong SQLite.
 

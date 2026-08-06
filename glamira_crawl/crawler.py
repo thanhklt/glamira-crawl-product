@@ -9,12 +9,11 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
 
-import aiohttp
+from curl_cffi.requests import AsyncSession
+from curl_cffi.requests.exceptions import RequestException
 
 from .config import Settings
-from .browser import PlaywrightFetcher
 from .parsing import (
-    ReactDataUrlNotFound,
     extract_react_data_url,
     find_product_object,
     same_product_id,
@@ -72,7 +71,7 @@ class CrawlFailure:
 
 
 async def _get_bytes(
-    session: aiohttp.ClientSession,
+    session: AsyncSession,
     url: str,
     settings: Settings,
     *,
@@ -99,48 +98,53 @@ async def _get_bytes(
                 "Cache-Control": "no-cache",
                 **(extra_headers or {}),
             }
-            async with session.get(url, headers=headers, allow_redirects=True) as response:
-                if response.status < 200 or response.status >= 300:
-                    error = HttpStatusError(response.status, url)
-                    last_error = str(error)
-                    retryable = response.status in settings.retry_http_statuses
-                    if attempt + 1 < settings.retries:
-                        if retryable:
-                            retry_after = response.headers.get("Retry-After", "")
-                            try:
-                                delay = max(0.0, float(retry_after))
-                            except ValueError:
-                                delay = settings.retry_backoff_seconds * 2**attempt
-                            logger.warning(
-                                "HTTP %d, sẽ retry sau %.1fs | attempt=%d/%d | url=%s",
-                                response.status,
-                                delay,
-                                attempt + 1,
-                                settings.retries,
-                                _display_url(url),
-                            )
-                            await asyncio.sleep(delay)
-                            continue
-                    if not retryable:
+            response = await session.get(
+                url,
+                headers=headers,
+                allow_redirects=True,
+                timeout=settings.request_timeout_seconds,
+            )
+            if response.status_code < 200 or response.status_code >= 300:
+                error = HttpStatusError(response.status_code, url)
+                last_error = str(error)
+                retryable = response.status_code in settings.retry_http_statuses
+                if attempt + 1 < settings.retries:
+                    if retryable:
+                        retry_after = response.headers.get("Retry-After", "")
+                        try:
+                            delay = max(0.0, float(retry_after))
+                        except ValueError:
+                            delay = settings.retry_backoff_seconds * 2**attempt
                         logger.warning(
-                            "HTTP %d không retry cùng URL | url=%s",
-                            response.status,
+                            "HTTP %d, sẽ retry sau %.1fs | attempt=%d/%d | url=%s",
+                            response.status_code,
+                            delay,
+                            attempt + 1,
+                            settings.retries,
                             _display_url(url),
                         )
-                    raise error
-                body = await response.content.read(max_bytes + 1)
-                if len(body) > max_bytes:
-                    raise RuntimeError(f"Response vượt quá giới hạn {max_bytes} bytes")
-                logger.debug(
-                    "HTTP thành công | status=%d | bytes=%d | final_url=%s",
-                    response.status,
-                    len(body),
-                    _display_url(str(response.url)),
-                )
-                return body, str(response.url), response.charset
+                        await asyncio.sleep(delay)
+                        continue
+                if not retryable:
+                    logger.warning(
+                        "HTTP %d không retry cùng URL | url=%s",
+                        response.status_code,
+                        _display_url(url),
+                    )
+                raise error
+            body = response.content
+            if len(body) > max_bytes:
+                raise RuntimeError(f"Response vượt quá giới hạn {max_bytes} bytes")
+            logger.debug(
+                "curl-cffi thành công | status=%d | bytes=%d | final_url=%s",
+                response.status_code,
+                len(body),
+                _display_url(str(response.url)),
+            )
+            return body, str(response.url), response.encoding
         except HttpStatusError:
             raise
-        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+        except (RequestException, asyncio.TimeoutError) as exc:
             last_error = str(exc)
             if attempt + 1 < settings.retries:
                 delay = settings.retry_backoff_seconds * 2**attempt
@@ -164,7 +168,7 @@ def _decode(body: bytes, charset: str | None) -> str:
 
 
 async def crawl_one(
-    session: aiohttp.ClientSession,
+    session: AsyncSession,
     product_id: str,
     urls: list[str],
     settings: Settings,
@@ -172,8 +176,6 @@ async def crawl_one(
     pacer: RequestPacer | None = None,
     user_agent: str | None = None,
     user_agent_number: int = 1,
-    playwright_fetcher: PlaywrightFetcher | None = None,
-    browser_profile_index: int = 0,
 ) -> CrawlSuccess | CrawlFailure:
     if pacer is None:
         pacer = RequestPacer(0.0, 0.0)
@@ -185,44 +187,6 @@ async def crawl_one(
         product_id=quote(product_id, safe="")
     )
     urls_to_try = list(dict.fromkeys([*urls, fallback_url]))
-
-    async def crawl_with_playwright(
-        source_url: str,
-        recovery_error: Exception | None = None,
-    ) -> CrawlSuccess:
-        assert playwright_fetcher is not None
-        browser_result = await playwright_fetcher.fetch_product(
-            source_url,
-            browser_profile_index,
-            before_request=pacer.wait,
-        )
-        product = find_product_object(browser_result.payload)
-        if not same_product_id(product_id, product.get("product_id")):
-            raise ValueError(
-                "Playwright product_id không khớp "
-                f"(MongoDB={product_id}, JSON={product.get('product_id')})"
-            )
-        if settings.product_fields is not None:
-            product = {field: product.get(field) for field in settings.product_fields}
-        logger.info(
-            "[%s] Playwright crawl thành công | source=%s | react_data=%s",
-            product_id,
-            _display_url(browser_result.source_url),
-            _display_url(browser_result.react_data_url),
-        )
-        result_errors = tuple(url_errors)
-        if recovery_error is not None:
-            result_errors = (
-                *result_errors,
-                (source_url, f"HTTP client: {recovery_error}; Playwright đã phục hồi"),
-            )
-        return CrawlSuccess(
-            product_id,
-            product,
-            browser_result.source_url,
-            browser_result.react_data_url,
-            result_errors,
-        )
 
     logger.info(
         "[%s] Bắt đầu crawl | tracking_urls=%d | total_urls=%d | user_agent=%d",
@@ -241,26 +205,6 @@ async def crawl_one(
             url_type,
             _display_url(source_url),
         )
-        if playwright_fetcher is not None and getattr(settings, "playwright_primary", False):
-            logger.info(
-                "[%s] Dùng Playwright ngay lần đầu | type=%s | url=%s",
-                product_id,
-                url_type,
-                _display_url(source_url),
-            )
-            try:
-                return await crawl_with_playwright(source_url)
-            except Exception as browser_error:
-                url_errors.append((source_url, f"Playwright: {browser_error}"))
-                logger.warning(
-                    "[%s] Playwright primary thất bại | type=%s | error=%s | url=%s",
-                    product_id,
-                    url_type,
-                    browser_error,
-                    _display_url(source_url),
-                )
-                continue
-
         try:
             html_body, final_page_url, charset = await _get_bytes(
                 session,
@@ -304,37 +248,7 @@ async def crawl_one(
                 react_url,
                 tuple(url_errors),
             )
-        except (aiohttp.ClientError, asyncio.TimeoutError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
-            should_use_playwright = playwright_fetcher is not None and (
-                (
-                    isinstance(exc, HttpStatusError)
-                    and exc.status in settings.playwright_fallback_http_statuses
-                )
-                or (
-                    isinstance(exc, ReactDataUrlNotFound)
-                    and settings.playwright_fallback_when_react_data_url_missing
-                )
-            )
-            if should_use_playwright:
-                logger.warning(
-                    "[%s] Chuyển sang Playwright | reason=%s | url=%s",
-                    product_id,
-                    exc,
-                    _display_url(source_url),
-                )
-                try:
-                    return await crawl_with_playwright(source_url, recovery_error=exc)
-                except Exception as browser_error:
-                    combined_error = f"HTTP client: {exc}; Playwright: {browser_error}"
-                    url_errors.append((source_url, combined_error))
-                    logger.warning(
-                        "[%s] Playwright thất bại | error=%s | url=%s",
-                        product_id,
-                        browser_error,
-                        _display_url(source_url),
-                    )
-                    continue
-
+        except (RequestException, asyncio.TimeoutError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
             url_errors.append((source_url, str(exc)))
             logger.warning(
                 "[%s] URL thất bại | type=%s | error=%s | url=%s",
@@ -361,15 +275,14 @@ async def crawl_pending(
         requeued = state.requeue_failed()
         logger.info("Đã đưa %d job failed về pending để retry", requeued)
 
-    timeout = aiohttp.ClientTimeout(total=settings.request_timeout_seconds)
     pacer = RequestPacer(settings.request_delay_seconds, settings.request_jitter_seconds)
     successes = 0
     failures = 0
     logger.info(
-        "Bắt đầu crawler | concurrency=%d | per_host=%d | retries=%d | "
+        "Bắt đầu crawler curl-cffi | workers=%d | impersonate=%s | retries=%d | "
         "delay=%.1fs | jitter=%.1fs | user_agents=%d | timeout=%.1fs",
         settings.concurrency,
-        settings.per_host_limit,
+        settings.curl_impersonate,
         settings.retries,
         settings.request_delay_seconds,
         settings.request_jitter_seconds,
@@ -377,50 +290,44 @@ async def crawl_pending(
         settings.request_timeout_seconds,
     )
 
-    user_agent_cursor = 0
     async with AsyncExitStack() as stack:
-        playwright_fetcher: PlaywrightFetcher | None = None
-        if settings.playwright_enabled:
-            playwright_fetcher = PlaywrightFetcher(settings)
-            stack.push_async_callback(playwright_fetcher.close)
-        sessions: list[aiohttp.ClientSession] = []
-        for user_agent in settings.user_agents:
-            connector = aiohttp.TCPConnector(
-                limit=settings.concurrency,
-                limit_per_host=settings.per_host_limit,
-                ttl_dns_cache=300,
-            )
+        sessions: list[AsyncSession] = []
+        for worker_index in range(settings.concurrency):
+            user_agent = settings.user_agents[worker_index % len(settings.user_agents)]
             session = await stack.enter_async_context(
-                aiohttp.ClientSession(
-                    timeout=timeout,
-                    connector=connector,
+                AsyncSession(
+                    max_clients=1,
+                    timeout=settings.request_timeout_seconds,
+                    impersonate=settings.curl_impersonate,
                     headers={"User-Agent": user_agent},
                 )
             )
             sessions.append(session)
-        while True:
-            jobs = state.claim(settings.concurrency)
-            if not jobs:
-                break
-            tasks = []
-            for product_id, urls in jobs:
-                agent_index = user_agent_cursor % len(settings.user_agents)
-                user_agent_cursor += 1
-                tasks.append(
-                    crawl_one(
-                        sessions[agent_index],
-                        product_id,
-                        urls,
-                        settings,
-                        pacer=pacer,
-                        user_agent=settings.user_agents[agent_index],
-                        user_agent_number=agent_index + 1,
-                        playwright_fetcher=playwright_fetcher,
-                        browser_profile_index=agent_index,
-                    )
+
+        async def worker_loop(worker_index: int) -> None:
+            nonlocal successes, failures
+            agent_index = worker_index % len(settings.user_agents)
+            worker_number = worker_index + 1
+            session = sessions[worker_index]
+
+            while True:
+                jobs = state.claim(1)
+                if not jobs:
+                    logger.info("Worker %d không còn job pending", worker_number)
+                    return
+
+                product_id, urls = jobs[0]
+                logger.debug("Worker %d nhận product_id=%s", worker_number, product_id)
+                result = await crawl_one(
+                    session,
+                    product_id,
+                    urls,
+                    settings,
+                    pacer=pacer,
+                    user_agent=settings.user_agents[agent_index],
+                    user_agent_number=agent_index + 1,
                 )
-            results = await asyncio.gather(*tasks)
-            for result in results:
+
                 if isinstance(result, CrawlSuccess):
                     state.save_success(
                         result.product_id,
@@ -433,11 +340,19 @@ async def crawl_pending(
                 else:
                     state.save_failure(result.product_id, result.error, result.url_errors)
                     failures += 1
-            logger.info(
-                "Tiến độ crawl | thành công=%d | thất bại=%d | đã xử lý=%d",
-                successes,
-                failures,
-                successes + failures,
-            )
+                logger.info(
+                    "Tiến độ crawl | worker=%d | thành công=%d | thất bại=%d | đã xử lý=%d",
+                    worker_number,
+                    successes,
+                    failures,
+                    successes + failures,
+                )
+
+        async with asyncio.TaskGroup() as workers:
+            for worker_index in range(settings.concurrency):
+                workers.create_task(
+                    worker_loop(worker_index),
+                    name=f"crawler-worker-{worker_index + 1}",
+                )
     logger.info("Crawler kết thúc | thành công=%d | thất bại=%d", successes, failures)
     return successes, failures

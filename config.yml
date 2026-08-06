@@ -1,7 +1,7 @@
 mongodb:
   # Không ghi username/password thật vào file này. Dùng các biến môi trường:
   # MONGODB_URI (URL đầy đủ), hoặc MONGODB_USERNAME + MONGODB_PASSWORD.
-  uri: mongodb://136.85.110.154:27017
+  uri: mongodb://136.85.113.80:27017
   auth_source: admin
   db: countly
   collection: summary
@@ -13,14 +13,16 @@ discovery:
   checkpoint_every: 2000
 
 crawler:
-  concurrency: 3
-  per_host_limit: 1
+  # Bốn curl-cffi AsyncSession độc lập, mỗi worker giữ cookie jar riêng.
+  concurrency: 10
   # Mọi request được giãn tối thiểu delay + một khoảng jitter ngẫu nhiên.
-  request_delay_seconds: 2.0
-  request_jitter_seconds: 1.0
+  request_delay_seconds: 0
+  request_jitter_seconds: 0
   request_timeout_seconds: 30
   retries: 3
   retry_backoff_seconds: 1.0
+  # Dùng TLS/HTTP2 fingerprint của Chrome; User-Agent vẫn xoay vòng bên dưới.
+  curl_impersonate: chrome
   # Chỉ các HTTP status tạm thời này mới retry cùng URL. 401/403/404 không retry.
   retry_http_statuses: [429, 500, 502, 503, 504]
   # UA lấy từ Chrome/Edge cài thật trên máy. Chrome/Chromium áp dụng UA reduction
@@ -30,18 +32,6 @@ crawler:
     - Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36
     - Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36 Edg/151.0.0.0
   fallback_product_url_template: https://www.glamira.co.uk/catalog/product/view/id/{product_id}
-
-playwright:
-  enabled: true
-  # true: dùng browser ngay từ URL đầu tiên, không thử aiohttp trước.
-  primary: true
-  concurrency: 2
-  navigation_timeout_seconds: 45
-  wait_after_load_seconds: 1.5
-  fallback_http_statuses: [403]
-  fallback_when_react_data_url_missing: true
-  # Thứ tự phải khớp crawler.user_agents: Chrome profile, rồi Edge profile.
-  browser_channels: [chrome, msedge]
 
 storage:
   state_db: data/crawl-state.sqlite3

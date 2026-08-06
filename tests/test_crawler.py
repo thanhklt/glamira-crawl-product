@@ -1,3 +1,4 @@
+import asyncio
 import json
 import unittest
 from types import SimpleNamespace
@@ -9,31 +10,17 @@ from glamira_crawl.crawler import (
     RequestPacer,
     _get_bytes,
     crawl_one,
+    crawl_pending,
 )
-from glamira_crawl.browser import BrowserProductResponse
-
-
-class _FakeContent:
-    def __init__(self, body=b"ok"):
-        self.body = body
-
-    async def read(self, _limit):
-        return self.body
 
 
 class _FakeResponse:
     def __init__(self, status, body=b"ok", headers=None):
-        self.status = status
+        self.status_code = status
         self.headers = headers or {}
         self.url = "https://example.com/product"
-        self.charset = "utf-8"
-        self.content = _FakeContent(body)
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *_args):
-        return None
+        self.encoding = "utf-8"
+        self.content = body
 
 
 class _FakeSession:
@@ -41,87 +28,89 @@ class _FakeSession:
         self.responses = list(responses)
         self.calls = 0
 
-    def get(self, *_args, **_kwargs):
+    async def get(self, *_args, **_kwargs):
         self.calls += 1
         return self.responses.pop(0)
 
 
-class _FakePlaywrightFetcher:
-    def __init__(self, response):
-        self.response = response
-        self.calls = []
+class _FakeAsyncSession:
+    def __init__(self, **_kwargs):
+        pass
 
-    async def fetch_product(self, url, profile_index, before_request=None):
-        self.calls.append((url, profile_index))
-        if before_request is not None:
-            await before_request()
-        return self.response
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, _exc_type, _exc, _traceback):
+        return False
+
+
+class _FakeState:
+    def __init__(self, product_ids):
+        self.pending = list(product_ids)
+        self.claim_limits = []
+        self.saved = []
+
+    def reset_interrupted(self):
+        return 0
+
+    def requeue_failed(self):
+        return 0
+
+    def claim(self, limit):
+        self.claim_limits.append(limit)
+        if not self.pending:
+            return []
+        return [(self.pending.pop(0), [])]
+
+    def save_success(
+        self,
+        product_id,
+        _product,
+        _source_url,
+        _react_data_url,
+        _url_errors,
+    ):
+        self.saved.append(product_id)
+
+    def save_failure(self, product_id, _error, _url_errors):
+        self.saved.append(product_id)
 
 
 class CrawlerTests(unittest.IsolatedAsyncioTestCase):
-    async def test_uses_playwright_as_primary_without_calling_http_client(self):
-        source_url = "https://example.com/product"
+    async def test_worker_claims_next_job_without_waiting_for_other_workers(self):
         settings = SimpleNamespace(
-            fallback_product_url_template=(
-                "https://www.glamira.co.uk/catalog/product/view/id/{product_id}"
-            ),
-            product_fields=("product_id", "name"),
-            playwright_primary=True,
+            concurrency=2,
+            request_delay_seconds=0,
+            request_jitter_seconds=0,
+            request_timeout_seconds=30,
+            curl_impersonate="chrome",
+            retries=1,
+            user_agents=("agent-1", "agent-2"),
         )
-        browser = _FakePlaywrightFetcher(
-            BrowserProductResponse(
-                {"product_id": 85796, "name": "Louisa"},
-                source_url,
-                "https://example.com/react-data.json",
-            )
-        )
-        mocked_get = AsyncMock()
-        with patch("glamira_crawl.crawler._get_bytes", mocked_get):
-            result = await crawl_one(
-                object(),
-                "85796",
-                [source_url],
-                settings,
-                playwright_fetcher=browser,
-                browser_profile_index=0,
+        state = _FakeState(["fast-1", "slow", "fast-2"])
+        finished = []
+
+        async def fake_crawl_one(_session, product_id, _urls, _settings, **_kwargs):
+            await asyncio.sleep(0.05 if product_id == "slow" else 0)
+            finished.append(product_id)
+            return CrawlSuccess(
+                product_id,
+                {"product_id": product_id},
+                f"https://example.com/{product_id}",
+                f"https://example.com/{product_id}.json",
+                (),
             )
 
-        self.assertIsInstance(result, CrawlSuccess)
-        self.assertEqual(result.product, {"product_id": 85796, "name": "Louisa"})
-        mocked_get.assert_not_awaited()
+        with (
+            patch("glamira_crawl.crawler.AsyncSession", _FakeAsyncSession),
+            patch("glamira_crawl.crawler.crawl_one", fake_crawl_one),
+        ):
+            successes, failures = await crawl_pending(settings, state)
 
-    async def test_uses_playwright_fallback_for_403(self):
-        source_url = "https://example.com/product"
-        settings = SimpleNamespace(
-            fallback_product_url_template=(
-                "https://www.glamira.co.uk/catalog/product/view/id/{product_id}"
-            ),
-            product_fields=("product_id", "name"),
-            playwright_fallback_http_statuses=(403,),
-            playwright_fallback_when_react_data_url_missing=True,
-        )
-        browser = _FakePlaywrightFetcher(
-            BrowserProductResponse(
-                {"product_id": 85796, "name": "Louisa"},
-                source_url,
-                "https://example.com/react-data.json",
-            )
-        )
-        mocked_get = AsyncMock(side_effect=HttpStatusError(403, source_url))
-        with patch("glamira_crawl.crawler._get_bytes", mocked_get):
-            result = await crawl_one(
-                object(),
-                "85796",
-                [source_url],
-                settings,
-                playwright_fetcher=browser,
-                browser_profile_index=1,
-            )
-
-        self.assertIsInstance(result, CrawlSuccess)
-        self.assertEqual(result.product, {"product_id": 85796, "name": "Louisa"})
-        self.assertEqual(browser.calls, [(source_url, 1)])
-        self.assertIn("Playwright đã phục hồi", result.url_errors[0][1])
+        self.assertEqual((successes, failures), (3, 0))
+        self.assertEqual(finished, ["fast-1", "fast-2", "slow"])
+        self.assertEqual(state.saved, ["fast-1", "fast-2", "slow"])
+        self.assertTrue(all(limit == 1 for limit in state.claim_limits))
 
     async def test_does_not_retry_403_on_same_url(self):
         session = _FakeSession([_FakeResponse(403)])
@@ -129,6 +118,7 @@ class CrawlerTests(unittest.IsolatedAsyncioTestCase):
             retries=3,
             retry_http_statuses=(429, 500, 502, 503, 504),
             retry_backoff_seconds=0,
+            request_timeout_seconds=30,
         )
         with self.assertRaises(HttpStatusError):
             await _get_bytes(
@@ -148,6 +138,7 @@ class CrawlerTests(unittest.IsolatedAsyncioTestCase):
             retries=3,
             retry_http_statuses=(429, 500, 502, 503, 504),
             retry_backoff_seconds=0,
+            request_timeout_seconds=30,
         )
         body, _, _ = await _get_bytes(
             session,
