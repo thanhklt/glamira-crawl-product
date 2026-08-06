@@ -6,15 +6,23 @@ import json
 import logging
 import sys
 
-from .config import Settings, load_settings
+from config.config import Settings, load_settings
 from .crawler import crawl_pending
 from .discovery import discover
+from .locations import DEFAULT_WORKERS, LocationStats, export_locations
 from .state import StateStore
+
+
+def _positive_int(value: str) -> int:
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError("phải lớn hơn hoặc bằng 1")
+    return number
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Thu thập thông tin sản phẩm Glamira từ MongoDB")
-    parser.add_argument("--config", default="config.yml", help="Đường dẫn file YAML")
+    parser.add_argument("--config", default="config/config.yml", help="Đường dẫn file YAML")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("discover", help="Quét MongoDB và tạo hàng đợi product_id/URL")
     crawl = commands.add_parser("crawl", help="Crawl các sản phẩm pending")
@@ -23,6 +31,13 @@ def _parser() -> argparse.ArgumentParser:
     export.add_argument("--no-metadata", action="store_true", help="Không thêm object _crawl")
     run = commands.add_parser("run", help="Chạy discover, crawl, rồi export")
     run.add_argument("--retry-failed", action="store_true")
+    locations = commands.add_parser("locations", help="Xuất location của các IP unique ra JSONL")
+    locations.add_argument(
+        "--workers",
+        type=_positive_int,
+        default=DEFAULT_WORKERS,
+        help="Số worker tra cứu IP2Location database local",
+    )
     commands.add_parser("stats", help="Xem trạng thái hàng đợi")
     return parser
 
@@ -52,6 +67,23 @@ def _run_export(settings: Settings, state: StateStore, include_metadata: bool = 
     print(f"Đã xuất {failed_count:,} URL lỗi ra {settings.failed_urls_output}")
 
 
+def _location_progress(stats: LocationStats) -> None:
+    print(
+        f"Locations: Mongo unique={stats.mongo_unique:,}, hợp lệ={stats.valid_unique:,}, "
+        f"đã ghi={stats.written:,}, lỗi={stats.lookup_errors:,}",
+        end="\r",
+        flush=True,
+    )
+
+
+def _run_locations(settings: Settings, workers: int) -> None:
+    stats = export_locations(settings, workers=workers, progress=_location_progress)
+    print(
+        f"\nLocations hoàn tất: đã ghi={stats.written:,}, IP không hợp lệ={stats.invalid:,}, "
+        f"trùng sau chuẩn hóa={stats.normalized_duplicates:,}, lỗi lookup={stats.lookup_errors:,}"
+    )
+
+
 def main() -> None:
     # Windows may otherwise use cp1252 and fail while printing Vietnamese help text.
     for stream in (sys.stdout, sys.stderr):
@@ -67,6 +99,10 @@ def main() -> None:
         stream=sys.stdout,
         force=True,
     )
+    if args.command == "locations":
+        _run_locations(settings, args.workers)
+        return
+
     state = StateStore(settings.state_db)
     try:
         if args.command == "discover":

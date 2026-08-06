@@ -11,13 +11,12 @@ công.
 ## Cài đặt
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -e .
+poetry env use 3.11
+poetry install
 ```
 
-Nếu PowerShell không cho activate script, có thể gọi trực tiếp
-`.\.venv\Scripts\python.exe main.py <command>`.
+Chạy command trong virtualenv do Poetry quản lý bằng
+`poetry run python main.py <command>`.
 
 HTTP crawler chỉ dùng `curl-cffi`; không cần cài Chrome, Edge hoặc Playwright.
 
@@ -40,7 +39,7 @@ tiếp bằng PowerShell:
 $env:MONGODB_USERNAME = "your-user"
 $env:MONGODB_PASSWORD = "your-password"
 $env:MONGODB_AUTH_SOURCE = "admin"
-python main.py discover
+poetry run python main.py discover
 ```
 
 Hoặc dùng connection string đầy đủ. Với cách này, username/password trong URI phải
@@ -48,7 +47,7 @@ Hoặc dùng connection string đầy đủ. Với cách này, username/password
 
 ```powershell
 $env:MONGODB_URI = "mongodb://user:password@mongo-host:27017/?authSource=admin"
-python main.py discover
+poetry run python main.py discover
 ```
 
 ## Chạy pipeline
@@ -57,33 +56,47 @@ Nên chạy từng bước để dễ theo dõi:
 
 ```powershell
 # 1. Stream document từ MongoDB và ghi product_id/URL vào queue SQLite
-python main.py discover
+poetry run python main.py discover
 
 # 2. Crawl các product đang pending
-python main.py crawl
+poetry run python main.py crawl
 
 # 3. Xem tiến độ
-python main.py stats
+poetry run python main.py stats
 
 # 4. Xuất data/products.jsonl và data/failed-urls.jsonl
-python main.py export
+poetry run python main.py export
 ```
 
-Có thể chạy cả ba bước bằng `python main.py run`. Khi process bị dừng, chạy lại
+Có thể chạy cả ba bước bằng `poetry run python main.py run`. Khi process bị dừng, chạy lại
 cùng lệnh; checkpoint MongoDB và trạng thái crawl nằm trong
 `data/crawl-state.sqlite3`. Các product thất bại không bị thử lại vô hạn; dùng:
 
 ```powershell
-python main.py crawl --retry-failed
+poetry run python main.py crawl --retry-failed
 ```
 
 Mỗi dòng trong output là một JSON object. Khóa `_crawl` chứa URL nguồn và thời
-gian crawl; dùng `python main.py export --no-metadata` nếu chỉ cần các field sản phẩm.
+gian crawl; dùng `poetry run python main.py export --no-metadata` nếu chỉ cần các field sản phẩm.
 
 Trong lúc crawl, JSON sản phẩm được lưu bền vững ở bảng `results` trong
 `data/crawl-state.sqlite3`. Lệnh `export` chuyển chúng thành
 `data/products.jsonl`; file `data/failed-urls.jsonl` chứa ID, URL lỗi, lỗi gần
 nhất, số lần lỗi và URL fallback đã phục hồi sản phẩm (nếu có).
+
+## Xuất location theo IP
+
+Đặt database tại `data/IP2LOCATION-LITE-DB5.BIN`, sau đó chạy:
+
+```powershell
+poetry run python main.py locations --workers 16
+```
+
+Command dùng index MongoDB `ip_1` để stream IP unique, tra cứu DB5 bằng nhiều
+worker và ghi trực tiếp vào `data/locations.jsonl`. File được ghi lại từ đầu mỗi
+lần chạy. Mỗi dòng có đúng các trường `ip`, `city_name`, `region_name`,
+`country_code`, `country_name`, `latitude` và `longitude`; dữ liệu không có trong
+DB5 được ghi là `null`.
 
 ### Log trên terminal
 

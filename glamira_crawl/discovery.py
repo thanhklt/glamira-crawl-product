@@ -8,7 +8,7 @@ from bson import ObjectId
 from pymongo import ASCENDING, MongoClient
 from pymongo.read_preferences import SecondaryPreferred
 
-from .config import Settings
+from config.config import Settings
 from .state import StateStore
 
 

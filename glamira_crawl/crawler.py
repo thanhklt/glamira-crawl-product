@@ -12,7 +12,7 @@ from urllib.parse import quote
 from curl_cffi.requests import AsyncSession
 from curl_cffi.requests.exceptions import RequestException
 
-from .config import Settings
+from config.config import Settings
 from .parsing import (
     extract_react_data_url,
     find_product_object,
