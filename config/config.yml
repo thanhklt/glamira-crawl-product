@@ -1,7 +1,7 @@
 mongodb:
   # Không ghi username/password thật vào file này. Dùng các biến môi trường:
   # MONGODB_URI (URL đầy đủ), hoặc MONGODB_USERNAME + MONGODB_PASSWORD.
-  uri: mongodb://136.85.113.80:27017
+  uri: mongodb://136.85.113.80:27017/?authSource=admin
   auth_source: admin
   db: countly
   collection: summary
