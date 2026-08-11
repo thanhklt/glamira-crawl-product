@@ -1,39 +1,64 @@
-# Glamira product collector
+# Glamira Product Collector
 
-Pipeline có checkpoint để quét collection MongoDB lớn, khử trùng lặp theo `product_id`,
-trích `react_data_url` từ trang sản phẩm và xuất thông tin sản phẩm ra JSONL.
+Công cụ thu thập dữ liệu sản phẩm Glamira từ MongoDB, crawl thông tin chi tiết và
+xuất kết quả ra JSONL. Tiến trình được lưu trong SQLite nên có thể tiếp tục sau khi
+chương trình bị dừng.
 
-Nếu URL lấy từ tracking không truy cập được, crawler tự động thử URL chuẩn theo
-ID: `https://www.glamira.co.uk/catalog/product/view/id/{product_id}`. Tất cả URL
-lỗi được xuất ra `data/failed-urls.jsonl`, kể cả khi URL fallback sau đó thành
-công.
+## Yêu cầu
+
+- Python 3.11 trở lên
+- Poetry
+- Quyền truy cập MongoDB nguồn
+- File IP2Location DB5 nếu dùng lệnh `locations`
+
+Crawler sử dụng `curl-cffi`, không cần cài Chrome, Edge hoặc Playwright.
 
 ## Cài đặt
+
+Chạy các lệnh sau tại thư mục gốc của dự án:
 
 ```powershell
 poetry env use 3.11
 poetry install
 ```
 
-Chạy command trong virtualenv do Poetry quản lý bằng
-`poetry run python main.py <command>`.
+Kiểm tra CLI sau khi cài đặt:
 
-HTTP crawler chỉ dùng `curl-cffi`; không cần cài Chrome, Edge hoặc Playwright.
+```powershell
+poetry run python main.py --help
+```
 
-## Xác thực MongoDB
+Sau `poetry install`, có thể dùng entry point `glamira-crawl` thay cho
+`python main.py`. Hai lệnh dưới đây tương đương:
 
-Không lưu credential thật trong `config.yml`. Ứng dụng tự đọc file `.env` ở thư
-mục project; có thể sao chép `.env.example` thành `.env`. File `.env` đã nằm
-trong `.gitignore`. Username/password được truyền riêng cho PyMongo nên không
-cần URL-encode.
+```powershell
+poetry run python main.py stats
+poetry run glamira-crawl stats
+```
+
+Các ví dụ còn lại trong README sử dụng cách gọi `poetry run python main.py`.
+
+## Cấu hình MongoDB
+
+Cấu hình chung nằm tại `config/config.yml`. Không lưu tài khoản hoặc mật khẩu thật
+trong file này. Tạo file `.env` tại thư mục gốc của dự án với nội dung:
 
 ```dotenv
 MONGODB_USERNAME=your-user
 MONGODB_PASSWORD=your-password
+MONGODB_AUTH_SOURCE=admin
 ```
 
-Biến môi trường của process có độ ưu tiên cao hơn file `.env`. Có thể đặt trực
-tiếp bằng PowerShell:
+Hoặc cung cấp connection string đầy đủ:
+
+```dotenv
+MONGODB_URI=mongodb://user:password@mongo-host:27017/?authSource=admin
+```
+
+Nếu URI chứa ký tự đặc biệt, username và password phải được URL-encode. Biến môi
+trường của process được ưu tiên hơn giá trị trong `.env` và `config/config.yml`.
+
+Ví dụ đặt biến trực tiếp trong PowerShell:
 
 ```powershell
 $env:MONGODB_USERNAME = "your-user"
@@ -42,104 +67,129 @@ $env:MONGODB_AUTH_SOURCE = "admin"
 poetry run python main.py discover
 ```
 
-Hoặc dùng connection string đầy đủ. Với cách này, username/password trong URI phải
-được URL-encode nếu có ký tự đặc biệt:
+## Các lệnh chạy chương trình
+
+### Chạy toàn bộ pipeline
+
+Lệnh sau lần lượt thực hiện `discover`, `crawl` và `export`:
 
 ```powershell
-$env:MONGODB_URI = "mongodb://user:password@mongo-host:27017/?authSource=admin"
-poetry run python main.py discover
+poetry run python main.py run
 ```
 
-## Chạy pipeline
-
-Nên chạy từng bước để dễ theo dõi:
+Để thử lại một lần các sản phẩm đã crawl thất bại:
 
 ```powershell
-# 1. Stream document từ MongoDB và ghi product_id/URL vào queue SQLite
+poetry run python main.py run --retry-failed
+```
+
+### Chạy từng bước
+
+```powershell
+# 1. Quét MongoDB và đưa product_id/URL vào hàng đợi SQLite
 poetry run python main.py discover
 
-# 2. Crawl các product đang pending
+# 2. Crawl các sản phẩm đang chờ
 poetry run python main.py crawl
 
-# 3. Xem tiến độ
+# 3. Xem số lượng item theo trạng thái trong hàng đợi
 poetry run python main.py stats
 
-# 4. Xuất data/products.jsonl và data/failed-urls.jsonl
+# 4. Xuất kết quả ra JSONL
 poetry run python main.py export
 ```
 
-Có thể chạy cả ba bước bằng `poetry run python main.py run`. Khi process bị dừng, chạy lại
-cùng lệnh; checkpoint MongoDB và trạng thái crawl nằm trong
-`data/crawl-state.sqlite3`. Các product thất bại không bị thử lại vô hạn; dùng:
+Các tuỳ chọn bổ sung:
 
 ```powershell
+# Thử lại một lần các sản phẩm đã thất bại
 poetry run python main.py crawl --retry-failed
+
+# Xuất sản phẩm nhưng không thêm object _crawl
+poetry run python main.py export --no-metadata
 ```
 
-Mỗi dòng trong output là một JSON object. Khóa `_crawl` chứa URL nguồn và thời
-gian crawl; dùng `poetry run python main.py export --no-metadata` nếu chỉ cần các field sản phẩm.
+Checkpoint và kết quả trung gian được lưu tại `data/crawl-state.sqlite3`. Khi
+chương trình bị dừng, chạy lại cùng lệnh để tiếp tục; không cần quét lại từ đầu.
 
-Trong lúc crawl, JSON sản phẩm được lưu bền vững ở bảng `results` trong
-`data/crawl-state.sqlite3`. Lệnh `export` chuyển chúng thành
-`data/products.jsonl`; file `data/failed-urls.jsonl` chứa ID, URL lỗi, lỗi gần
-nhất, số lần lỗi và URL fallback đã phục hồi sản phẩm (nếu có).
+### Xuất vị trí theo địa chỉ IP
 
-## Xuất location theo IP
+Đặt database IP2Location tại `data/IP2LOCATION-LITE-DB5.BIN`, sau đó chạy:
 
-Đặt database tại `data/IP2LOCATION-LITE-DB5.BIN`, sau đó chạy:
+```powershell
+poetry run python main.py locations
+```
+
+Mặc định lệnh dùng số worker được khai báo trong chương trình. Có thể chỉ định số
+worker khác, ví dụ:
 
 ```powershell
 poetry run python main.py locations --workers 16
 ```
 
-Command dùng index MongoDB `ip_1` để stream IP unique, tra cứu DB5 bằng nhiều
-worker và ghi trực tiếp vào `data/locations.jsonl`. File được ghi lại từ đầu mỗi
-lần chạy. Mỗi dòng có đúng các trường `ip`, `city_name`, `region_name`,
-`country_code`, `country_name`, `latitude` và `longitude`; dữ liệu không có trong
-DB5 được ghi là `null`.
+Kết quả được ghi lại từ đầu vào `data/locations.jsonl` sau mỗi lần chạy.
 
-### Log trên terminal
+### Dùng file cấu hình khác
 
-Crawler ghi log có timestamp trực tiếp ra terminal. Mức log được cấu hình tại:
+Tuỳ chọn `--config` phải đặt trước tên subcommand:
 
-```yaml
-logging:
-  level: INFO
+```powershell
+poetry run python main.py --config path/to/config.yml run
+poetry run python main.py --config path/to/config.yml crawl --retry-failed
 ```
 
-- `INFO`: từng product ID, tracking/fallback URL, kết quả và tiến độ theo worker.
-- `DEBUG`: thêm từng HTTP request, response và retry.
-- `WARNING`: chỉ URL lỗi, retry và cảnh báo.
-- `ERROR`: chỉ các sản phẩm thất bại hoàn toàn.
+## Danh sách lệnh nhanh
 
-Với tập dữ liệu rất lớn, nên dùng `WARNING` để tránh terminal trở thành nút thắt
-hiệu năng.
+| Lệnh | Chức năng |
+| --- | --- |
+| `discover` | Quét MongoDB và tạo hàng đợi product ID/URL |
+| `crawl` | Crawl các sản phẩm đang chờ |
+| `crawl --retry-failed` | Crawl và thử lại một lần các item thất bại |
+| `stats` | Xem trạng thái hàng đợi |
+| `export` | Xuất sản phẩm và URL lỗi ra JSONL |
+| `export --no-metadata` | Xuất sản phẩm không kèm `_crawl` |
+| `run` | Chạy `discover`, `crawl`, `export` liên tiếp |
+| `run --retry-failed` | Chạy toàn bộ pipeline và thử lại item thất bại |
+| `locations [--workers N]` | Xuất location của các IP duy nhất |
 
-## Lưu ý cho collection 41 triệu document
+Để xem trợ giúp của một lệnh cụ thể:
 
-- Pipeline dùng cursor theo batch và SQLite trên đĩa, không nạp toàn bộ ID vào RAM.
-- Dữ liệu được checkpoint theo `_id`; mỗi lần chạy lại chỉ đọc các document mới hơn.
-- Nên kiểm tra `explain()` trước khi chạy production. Index phù hợp cho truy vấn
-  discovery thường là `{ collection: 1, _id: 1 }`; việc tạo index phải được DBA
-  xác nhận vì có thể tốn dung lượng và I/O lớn.
-- Crawler dùng `curl-cffi` với số worker được đặt bằng `crawler.concurrency`. Mỗi
-  worker có `AsyncSession`, connection pool và cookie jar riêng;
-  `curl_impersonate: chrome` bật TLS/HTTP2 fingerprint của Chrome.
-- Worker hoạt động liên tục: hoàn tất và lưu một sản phẩm xong sẽ `claim(1)` ngay,
-  không phải chờ các worker khác kết thúc cùng batch.
-- Bộ điều tiết chung giãn thời điểm bắt đầu request theo
-  `request_delay_seconds` cộng jitter; đặt cả hai bằng `0` sẽ không chờ giữa các
-  request.
-- User-Agent được lấy round-robin từ `crawler.user_agents`; cấu hình hiện dùng
-  Chrome/Edge cài thật trên máy. Mỗi User-Agent có HTTP session và cookie jar
-  riêng, và cùng một sản phẩm giữ nguyên profile cho cả HTML lẫn JSON.
-- HTTP 401/403/404 không retry cùng URL. Chỉ 429, một số 5xx, timeout và lỗi mạng
-  tạm thời được retry.
-- Không có browser fallback. URL bị chặn hoặc thiếu `react_data_url` được ghi lỗi,
-  sau đó crawler chuyển sang candidate URL tiếp theo.
-- Mỗi `product_id` giữ tối đa ba candidate URL. Chỉ một JSON thành công được
-  lưu nhờ primary key trong SQLite.
+```powershell
+poetry run python main.py crawl --help
+poetry run python main.py locations --help
+```
 
-Danh sách field output, User-Agent, delay, concurrency, batch size và các đường
-dẫn đều có thể chỉnh trong `config.yml`. Đặt `product_fields: null` để lưu toàn
-bộ object sản phẩm.
+## File đầu ra
+
+- `data/products.jsonl`: dữ liệu sản phẩm; mỗi dòng là một JSON object.
+- `data/failed-urls.jsonl`: URL lỗi, số lần lỗi và URL fallback nếu có.
+- `data/locations.jsonl`: thông tin vị trí của các IP duy nhất.
+- `data/crawl-state.sqlite3`: checkpoint, hàng đợi và kết quả trung gian.
+
+Nếu URL tracking không truy cập được, crawler tự thử URL chuẩn theo mẫu:
+
+```text
+https://www.glamira.co.uk/catalog/product/view/id/{product_id}
+```
+
+## Tuỳ chỉnh và vận hành
+
+Có thể chỉnh MongoDB, đường dẫn file, field đầu ra, User-Agent, delay, retry,
+concurrency, batch size và mức log trong `config/config.yml`. Đặt
+`product_fields: null` để lưu toàn bộ object sản phẩm.
+
+Các mức log thường dùng:
+
+- `DEBUG`: chi tiết request, response và retry.
+- `INFO`: tiến độ và kết quả từng sản phẩm.
+- `WARNING`: cảnh báo, URL lỗi và retry.
+- `ERROR`: chỉ các lỗi nghiêm trọng.
+
+Với collection rất lớn, nên dùng mức `WARNING` để giảm lượng log. Pipeline stream
+dữ liệu theo batch và lưu trạng thái trên đĩa, không nạp toàn bộ product ID vào RAM.
+
+## Chạy kiểm thử
+
+```powershell
+poetry run python -m unittest discover -s tests -v
+```

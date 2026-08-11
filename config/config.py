@@ -48,7 +48,7 @@ def _section(raw: dict[str, Any], name: str) -> dict[str, Any]:
 def load_settings(path: str | Path) -> Settings:
     config_path = Path(path).resolve()
     # Shell/process variables take precedence over values from the local .env.
-    load_dotenv(config_path.parent / ".env", override=False)
+    load_dotenv(config_path.parent.parent / ".env", override=False)
     with config_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle) or {}
     if not isinstance(raw, dict):
