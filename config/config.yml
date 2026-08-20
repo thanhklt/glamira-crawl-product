@@ -1,7 +1,7 @@
 mongodb:
   # Không ghi username/password thật vào file này. Dùng các biến môi trường:
   # MONGODB_URI (URL đầy đủ), hoặc MONGODB_USERNAME + MONGODB_PASSWORD.
-  uri: mongodb://136.85.113.80:27017/?authSource=admin
+  uri: mongodb://34.87.142.239:27017/?authSource=admin
   auth_source: admin
   db: countly
   collection: summary
@@ -37,6 +37,13 @@ storage:
   state_db: ../data/crawl-state.sqlite3
   output: ../data/products.jsonl
   failed_urls_output: ../data/failed-urls.jsonl
+
+load:
+  # GCS URI: gs://raw_glamira/mongodb_data/
+  gcs_bucket: raw_glamira
+  gcs_prefix: mongodb_data/
+  documents_per_file: 10000
+  checkpoint_file: ../data/load-checkpoint.json
 
 logging:
   # DEBUG: chi tiết request/retry; INFO: từng sản phẩm/URL; WARNING: chỉ lỗi.

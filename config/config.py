@@ -34,6 +34,10 @@ class Settings:
     state_db: Path
     output: Path
     failed_urls_output: Path
+    load_gcs_bucket: str
+    load_gcs_prefix: str
+    load_documents_per_file: int
+    load_checkpoint: Path
     product_fields: tuple[str, ...] | None
     log_level: str
 
@@ -58,6 +62,7 @@ def load_settings(path: str | Path) -> Settings:
     discovery = _section(raw, "discovery")
     crawler = _section(raw, "crawler")
     storage = _section(raw, "storage")
+    loader = _section(raw, "load")
     logging_config = _section(raw, "logging")
     base_dir = config_path.parent
 
@@ -133,6 +138,12 @@ def load_settings(path: str | Path) -> Settings:
         output=local_path(str(storage.get("output", "data/products.jsonl"))),
         failed_urls_output=local_path(
             str(storage.get("failed_urls_output", "data/failed-urls.jsonl"))
+        ),
+        load_gcs_bucket=str(loader.get("gcs_bucket", "raw_glamira")).strip(),
+        load_gcs_prefix=str(loader.get("gcs_prefix", "mongodb_data/")).strip("/"),
+        load_documents_per_file=max(1, int(loader.get("documents_per_file", 10000))),
+        load_checkpoint=local_path(
+            str(loader.get("checkpoint_file", "../data/load-checkpoint.json"))
         ),
         product_fields=None if fields is None else tuple(str(field) for field in fields),
         log_level=log_level,

@@ -11,6 +11,7 @@ from .crawler import crawl_pending
 from .discovery import discover
 from .locations import DEFAULT_WORKERS, LocationStats, export_locations
 from .state import StateStore
+from load.export_to_gcs import export_to_gcs
 
 
 def _positive_int(value: str) -> int:
@@ -37,6 +38,13 @@ def _parser() -> argparse.ArgumentParser:
         type=_positive_int,
         default=DEFAULT_WORKERS,
         help="Số worker tra cứu IP2Location database local",
+    )
+    load = commands.add_parser("load", help="Xuất MongoDB thành Parquet và upload lên GCS")
+    load.add_argument(
+        "--documents-per-file",
+        type=_positive_int,
+        default=None,
+        help="Số document tối đa trong mỗi file (mặc định lấy từ config)",
     )
     commands.add_parser("stats", help="Xem trạng thái hàng đợi")
     return parser
@@ -84,6 +92,15 @@ def _run_locations(settings: Settings, workers: int) -> None:
     )
 
 
+def _run_load(settings: Settings, documents_per_file: int | None) -> None:
+    result = export_to_gcs(settings, documents_per_file=documents_per_file)
+    print(
+        f"Load hoàn tất: files={result.files_uploaded:,}, "
+        f"documents={result.documents_uploaded:,}, "
+        f"file tiếp theo={result.checkpoint.next_file_number:,}"
+    )
+
+
 def main() -> None:
     # Windows may otherwise use cp1252 and fail while printing Vietnamese help text.
     for stream in (sys.stdout, sys.stderr):
@@ -101,6 +118,9 @@ def main() -> None:
     )
     if args.command == "locations":
         _run_locations(settings, args.workers)
+        return
+    if args.command == "load":
+        _run_load(settings, args.documents_per_file)
         return
 
     state = StateStore(settings.state_db)

@@ -151,6 +151,7 @@ poetry run python main.py --config path/to/config.yml crawl --retry-failed
 | `run` | Chạy `discover`, `crawl`, `export` liên tiếp |
 | `run --retry-failed` | Chạy toàn bộ pipeline và thử lại item thất bại |
 | `locations [--workers N]` | Xuất location của các IP duy nhất |
+| `load [--documents-per-file N]` | Stream MongoDB thành Parquet và upload lên GCS |
 
 Để xem trợ giúp của một lệnh cụ thể:
 
@@ -165,6 +166,84 @@ poetry run python main.py locations --help
 - `data/failed-urls.jsonl`: URL lỗi, số lần lỗi và URL fallback nếu có.
 - `data/locations.jsonl`: thông tin vị trí của các IP duy nhất.
 - `data/crawl-state.sqlite3`: checkpoint, hàng đợi và kết quả trung gian.
+
+## Xuất MongoDB sang Parquet trên GCS
+
+Lệnh `load` đọc toàn bộ collection MongoDB theo thứ tự `_id`, giữ nguyên object/array
+lồng nhau dưới dạng Arrow `struct` và `list<struct>`, rồi upload các file Parquet lên:
+
+```text
+gs://raw_glamira/mongodb_data/1.parquet
+gs://raw_glamira/mongodb_data/2.parquet
+...
+```
+
+Mỗi file mặc định có tối đa 1.000 document; file cuối có thể ít hơn. Chạy bằng:
+
+```powershell
+poetry run python main.py load
+```
+
+Có thể thay đổi kích thước file cho lần chạy hiện tại:
+
+```powershell
+poetry run python main.py load --documents-per-file 1000
+```
+
+Cấu hình tương ứng trong `config/config.yml`:
+
+```yaml
+load:
+  gcs_bucket: raw_glamira
+  gcs_prefix: mongodb_data/
+  documents_per_file: 1000
+  checkpoint_file: ../data/load-checkpoint.json
+```
+
+Ứng dụng dùng Google Application Default Credentials. Trên VM chạy bằng service
+account gắn với máy hoặc khai báo file credential:
+
+```powershell
+$env:GOOGLE_APPLICATION_CREDENTIALS = "path/to/service-account.json"
+poetry run python main.py load
+```
+
+Trên Linux:
+
+```bash
+export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+poetry run python main.py load
+```
+
+Service account cần quyền tạo và đọc object trong bucket `raw_glamira`.
+
+Checkpoint được lưu đồng thời tại:
+
+```text
+data/load-checkpoint.json
+gs://raw_glamira/mongodb_data/_checkpoint.json
+```
+
+Checkpoint chứa `_id` MongoDB cuối cùng đã upload và số file kế tiếp. Nó chỉ được
+cập nhật sau khi upload Parquet thành công. Khi chạy lại, chương trình ưu tiên
+checkpoint trên GCS, tiếp tục với `_id` lớn hơn và không ghi đè file đã có. Mỗi
+Parquet object còn có metadata về `_id` đầu/cuối và số document để phục hồi an toàn
+nếu process dừng giữa bước upload file và cập nhật checkpoint.
+
+Schema được suy luận và hợp nhất trong từng nhóm document. Nếu một field có lúc là
+array và có lúc là giá trị đơn, giá trị đơn được nâng thành array một phần tử. Nếu
+array chứa cả object và scalar, scalar được đặt trong struct với field `_value`.
+Các scalar có kiểu không tương thích được chuyển thành string. Nhờ vậy nested array
+vẫn được lưu dưới dạng `list<struct>`; schema giữa các file vẫn có thể khác nếu dữ
+liệu nguồn thay đổi theo thời gian.
+
+File được ghi bằng encoding LIST chuẩn của Parquet. Khi tạo bảng hoặc chạy load job
+thủ công trong BigQuery, phải bật tùy chọn Parquet **List inference**
+(`enable_list_inference = true`). Khi tùy chọn này được bật, BigQuery chuyển LIST
+thành field `REPEATED` và bỏ các node vật lý `list`/`element` khỏi schema logic.
+Nếu không bật, các node kỹ thuật này sẽ xuất hiện thành các RECORD như
+`cart_products.list.element`. Bảng đã được tạo với schema sai cần được tạo lại;
+bật tùy chọn cho lần load sau không tự sửa schema của bảng hiện có.
 
 Nếu URL tracking không truy cập được, crawler tự thử URL chuẩn theo mẫu:
 
