@@ -1,0 +1,1 @@
+from trigger_bigquery import trigger_bigquery_load
