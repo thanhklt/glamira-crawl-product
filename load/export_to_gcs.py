@@ -26,8 +26,8 @@ logger = logging.getLogger(__name__)
 CHECKPOINT_OBJECT = "_checkpoint.json"
 PARQUET_LEAF_TYPE = pa.string()
 DEFAULT_JSONL_EXPORTS = {
-    "locations.jsonl": Path(__file__).resolve().parent.parent / "data" / "locations.jsonl",
-    "products.jsonl": Path(__file__).resolve().parent.parent / "data" / "products.jsonl",
+    "location_data/locations.jsonl": Path(__file__).resolve().parent.parent / "data" / "locations.jsonl",
+    "product_data/products.jsonl": Path(__file__).resolve().parent.parent / "data" / "products.jsonl",
 }
 
 
@@ -381,8 +381,6 @@ def upload_jsonl_exports(bucket: Any, files: Mapping[str, Path]) -> tuple[str, .
 
     uploaded: list[str] = []
     for object_name, path in files.items():
-        if "/" in object_name or "\\" in object_name:
-            raise ValueError(f"JSONL object phai nam o bucket root: {object_name}")
         bucket.blob(object_name).upload_from_filename(
             str(path),
             content_type="application/x-ndjson",
